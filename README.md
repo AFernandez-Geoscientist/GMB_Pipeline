@@ -81,7 +81,7 @@ cd GMB_Pipeline
 You can create an environment using the provided `environment.yml` file:
 
 ```bash
-conda env create -f environment.yml
+conda env create -f gmb_env.yml
 conda activate gmb_env
 ```
 
