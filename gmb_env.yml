@@ -1,0 +1,24 @@
+name: gmb_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  # Core Geospatial Stack
+  - gdal
+  - rasterio
+  - geopandas
+  - geoutils
+  - pyproj
+  - xdem
+  # Scientific & Data Libraries
+  - numpy
+  - pandas
+  - scipy
+  # Plotting & Visualization
+  - matplotlib
+  - matplotlib-scalebar
+  - cmaps
+  - pip:
+    # Included in case any sub-dependency requires pip fallback
