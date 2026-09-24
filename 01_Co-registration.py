@@ -1,8 +1,5 @@
 """
 Scripts used to estimate elevation changes and error for Universidad Glacier using XDEM (Hugonnet et al., 2020)
-
-By Jorge Andrés Berkhoff
-Department of Geography and Geosciences, FAU Erlangen–Nürnberg
 """
 
 import os

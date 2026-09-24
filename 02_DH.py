@@ -2,7 +2,6 @@
 Script to compute elevation differences (dh), statistics, export rasters, 
 and generate multi-panel spatial plots grouped by plot ID.
 
- FAU Erlangen-Nürnberg / Universidad Glacier Research
 """
 
 import os
@@ -27,6 +26,25 @@ import cmaps
 
 
 # =============================================================================
+# User Settings
+# =============================================================================
+
+# Outlier threshold (in metres). After masking dh with the glacier outline,
+# every pixel with |dh| > DH_THRESHOLD is discarded (set to NaN) BEFORE the
+# statistics are computed, the masked GeoTIFF is written and the figures are
+# drawn. Example: 150 keeps only pixels between -150 m and +150 m.
+# Set to None to disable the filter.
+DH_THRESHOLD = 150
+
+# Prefix for every output file = name of this script (e.g. "02_DH").
+# Falls back to "02_DH" if __file__ is not defined (e.g. interactive sessions).
+try:
+    SCRIPT_NAME = Path(__file__).stem
+except NameError:
+    SCRIPT_NAME = "02_DH"
+
+
+# =============================================================================
 # Helper Functions
 # =============================================================================
 
@@ -47,13 +65,14 @@ def find_dem_file(folder_path: Path, year: int) -> Path:
     return candidates[0]
 
 
-def compute_stats_dict(period_text, data_array, total_polygon_pixels=np.nan):
+def compute_stats_dict(period_text, data_array, total_polygon_pixels=np.nan, n_outliers=0):
     """Computes statistical summary dictionary for pixels."""
     if data_array.size == 0 or not np.any(np.isfinite(data_array)):
         return {
             'Ini_Period': period_text.split('-')[0],
             'End_Period': period_text.split('-')[1],
             'Total_Pixels_In_Polygon': total_polygon_pixels,
+            'Outliers_Removed': int(n_outliers),
             'Count': 0, 'Sum': np.nan, 'Mean': np.nan, 'Median': np.nan,
             'Std': np.nan, 'Min': np.nan, 'Max': np.nan,
             'Cutoff_Lower_3Std': np.nan, 'Cutoff_Upper_3Std': np.nan,
@@ -66,6 +85,7 @@ def compute_stats_dict(period_text, data_array, total_polygon_pixels=np.nan):
             'Ini_Period': period_text.split('-')[0],
             'End_Period': period_text.split('-')[1],
             'Total_Pixels_In_Polygon': total_polygon_pixels,
+            'Outliers_Removed': int(n_outliers),
             'Count': 0, 'Sum': np.nan, 'Mean': np.nan, 'Median': np.nan,
             'Std': np.nan, 'Min': np.nan, 'Max': np.nan,
             'Cutoff_Lower_3Std': np.nan, 'Cutoff_Upper_3Std': np.nan,
@@ -83,6 +103,7 @@ def compute_stats_dict(period_text, data_array, total_polygon_pixels=np.nan):
         'Ini_Period': parts[0],
         'End_Period': parts[1],
         'Total_Pixels_In_Polygon': int(total_polygon_pixels) if not np.isnan(total_polygon_pixels) else np.nan,
+        'Outliers_Removed': int(n_outliers),
         'Count': int(valid_data.size),
         'Sum': float(np.sum(valid_data)),
         'Mean': mean_val,
@@ -158,6 +179,11 @@ def main():
     norm = Normalize(vmin=-50, vmax=50)
     no_data_patch = Patch(facecolor='none', edgecolor='grey', hatch='xxx', label='No data')
 
+    if DH_THRESHOLD is None:
+        print("Outlier filter: disabled")
+    else:
+        print(f"Outlier filter: removing masked dh pixels with |dh| > {DH_THRESHOLD} m")
+
     # Read CSV table
     pairs_df = pd.read_csv(csv_table_path, sep=r"\s+|,", engine="python")
 
@@ -198,8 +224,8 @@ def main():
         dh_raster = dem_end - dem_ini
         dh_data = dh_raster.data.squeeze().filled(np.nan)
 
-        # Save Full dh GeoTIFF
-        full_dh_filename = output_dh_dir / f"dh_{period_key}.tif"
+        # Save Full dh GeoTIFF (unfiltered)
+        full_dh_filename = output_dh_dir / f"{SCRIPT_NAME}_dh_{period_key}.tif"
         dh_raster.to_file(str(full_dh_filename))
 
         # Vector outline masking
@@ -217,21 +243,32 @@ def main():
         # Mean/Std into inf.
         dh_masked_data = np.where(outline_mask, dh_data, np.nan)
 
-        # Save Masked dh GeoTIFF
+        # Remove outliers: discard pixels outside +/- DH_THRESHOLD (set to NaN)
+        n_outliers = 0
+        if DH_THRESHOLD is not None:
+            with np.errstate(invalid="ignore"):
+                outlier_mask = np.isfinite(dh_masked_data) & (np.abs(dh_masked_data) > DH_THRESHOLD)
+            n_outliers = int(np.sum(outlier_mask))
+            dh_masked_data = np.where(outlier_mask, np.nan, dh_masked_data)
+            print(f"  Outliers removed (|dh| > {DH_THRESHOLD} m): {n_outliers}")
+
+        # Save Masked (and outlier-filtered) dh GeoTIFF
         masked_dh_raster = gu.Raster.from_array(
             data=dh_masked_data,
             transform=dh_raster.transform,
             crs=dh_raster.crs,
             nodata=np.nan
         )
-        masked_dh_filename = output_dh_dir / f"dh_{period_key}_masked.tif"
+        masked_dh_filename = output_dh_dir / f"{SCRIPT_NAME}_dh_{period_key}_masked.tif"
         masked_dh_raster.to_file(str(masked_dh_filename))
 
         # Compute Statistics for Masked dh
         total_pixels_in_polygon = int(np.sum(outline_mask))
         valid_masked_pixels = dh_masked_data[np.isfinite(dh_masked_data)]
 
-        stats = compute_stats_dict(period_key, valid_masked_pixels, total_polygon_pixels=total_pixels_in_polygon)
+        stats = compute_stats_dict(period_key, valid_masked_pixels,
+                                   total_polygon_pixels=total_pixels_in_polygon,
+                                   n_outliers=n_outliers)
         dh_stats_list.append(stats)
 
         # Process spatial visualization bounds for plotting
@@ -239,6 +276,11 @@ def main():
             with rasterio.open(str(full_dh_filename)) as src:
                 out_image, out_transform = mask(src, shape_gpd.to_crs(src.crs).geometry, crop=True, nodata=np.nan, filled=True)
                 raster_arr = out_image[0].astype(float)
+
+                # Apply the same outlier threshold to the plotted data
+                if DH_THRESHOLD is not None:
+                    with np.errstate(invalid="ignore"):
+                        raster_arr[np.abs(raster_arr) > DH_THRESHOLD] = np.nan
                 
                 raw_masked_img = np.ma.masked_where(np.isnan(raster_arr), raster_arr)
 
@@ -264,7 +306,7 @@ def main():
 
     # Save Stats CSV rounded to 2 decimal places
     stats_df = pd.DataFrame(dh_stats_list)
-    output_stats_csv = output_csv_dir / "02_DH_stats.csv"
+    output_stats_csv = output_csv_dir / f"{SCRIPT_NAME}_stats.csv"
     stats_df.round(2).to_csv(output_stats_csv, index=False, float_format="%.2f")
     print(f"\nSaved statistics table to: {output_stats_csv}")
 
@@ -287,9 +329,19 @@ def main():
         else:
             axes_grid = axes
 
+        # Special case: for the 2x3 grid layout, reserve the center-bottom
+        # panel (row 1, col 1) for a centered colorbar instead of data, as
+        # long as there's room for all items in the remaining 5 slots.
+        use_center_cbar = (rows == 2 and cols == 3 and n_items <= 5)
+
+        if use_center_cbar:
+            slot_positions = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 2)]
+        else:
+            slot_positions = [divmod(i, cols) for i in range(rows * cols)]
+
         im_ref = None
         for i, item in enumerate(items):
-            r, c = divmod(i, cols)
+            r, c = slot_positions[i]
             ax = axes_grid[r, c]
 
             shape = item['shape']
@@ -305,18 +357,42 @@ def main():
             shape.boundary.plot(ax=ax, edgecolor='gray', linewidth=2.5, zorder=3)
             setup_axis_formatting(ax, period_text)
 
-        # Hide any unused axis panels
-        for i in range(n_items, rows * cols):
-            r, c = divmod(i, cols)
+        # Hide any unused axis panels (slots beyond the plotted items)
+        for r, c in slot_positions[n_items:]:
             axes_grid[r, c].axis('off')
 
-        # Add shared colorbar centered below plots
-        if im_ref:
-            cbar = fig.colorbar(im_ref, ax=axes_grid, orientation='horizontal', shrink=0.6, aspect=30, pad=0.03)
-            cbar.set_label('Thickness Change Δh (m)', fontsize=11)
+        if use_center_cbar:
+            # Handle Center Colorbar in Subplot (1, 1) - Vertically and
+            # Horizontally Centered Horizontal Bar
+            cbar_ax = axes_grid[1, 1]
+            cbar_ax.axis('off')
 
-        fig_filename = figures_dir / f"DH_plot_{plot_id}.png"
-        plt.savefig(fig_filename, dpi=600, bbox_inches='tight')
+            if im_ref:
+                cbar_inset = inset_axes(
+                    cbar_ax,
+                    width="80%",
+                    height="8%",
+                    loc='center',
+                    bbox_to_anchor=(0.0, 0.0, 1.0, 1.0),
+                    bbox_transform=cbar_ax.transAxes
+                )
+
+                cbar = fig.colorbar(im_ref, cax=cbar_inset, orientation='horizontal')
+                cbar.set_label('Thickness Change Δh (m)', fontsize=11)
+                cbar_inset.xaxis.set_ticks_position('bottom')
+        else:
+            # Hide any unused axis panels
+            for i in range(n_items, rows * cols):
+                r, c = divmod(i, cols)
+                axes_grid[r, c].axis('off')
+
+            # Add shared colorbar centered below plots
+            if im_ref:
+                cbar = fig.colorbar(im_ref, ax=axes_grid, orientation='horizontal', shrink=0.6, aspect=30, pad=0.03)
+                cbar.set_label('Thickness Change Δh (m)', fontsize=11)
+
+        fig_filename = figures_dir / f"{SCRIPT_NAME}_plot_{plot_id}.png"
+        plt.savefig(fig_filename, dpi=400, bbox_inches='tight')
         plt.close()
         print(f"Saved figure for plot group {plot_id} to: {fig_filename}")
 
