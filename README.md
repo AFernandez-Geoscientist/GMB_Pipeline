@@ -54,7 +54,7 @@ The workflow runs in three main steps:
    - Outputs coregistered DEM rasters, stable terrain masks, summary tables, and diagnostic figures.
 
 2. **`02_DH.py`**:
-   - Computes spatial elevation differences ($\Delta h$ = $\text{DEM}_{\text{end}} - \text{DEM}_{\text{ini}}$).
+   - Computes spatial elevation differences ($\Delta h$ = $\text{DEM}_ {\text{end}} - \text{DEM}_{\text{ini}}$).
    - Exports masked/unmasked elevation change GeoTIFFs.
    - Calculates statistical metrics (Mean, Median, Std, $3\sigma$ cutoffs) over glacier outlines.
    - Generates multi-panel spatial plots grouped by plot ID.
